@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+      - name: Python Verification
+        run: python -m compileall services/
+
+  typescript-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install mobile app dependencies
+        working-directory: apps/mobile
+        run: npm ci
+      - name: TypeScript Check
+        working-directory: apps/mobile
+        run: npx tsc --noEmit
+
+  database-migration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostGIS 3
+        run: |
+          apt-get update
+          apt-get install -y postgis pkg-config libpq-dev gcc
+      - name: Execute SQL initialization scripts in alphabetical order
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -e
+          INIT_DIR="infrastructure/docker/postgres/init"
+          SQL_FILES=$(ls "$INIT_DIR"/0*_*.sql | sort)
+          echo "Found SQL files:"
+          echo "$SQL_FILES"
+          for f in $SQL_FILES; do
+            echo "== Running $f =="
+            psql -U postgres -h localhost -d postgres -f "$f" || exit 1
+          done
+      - name: Verify SQL compilation
+        run: |
+          echo "All SQL initialization scripts executed successfully without errors."
