@@ -1,0 +1,162 @@
+# RAAHI — local development stack
+#
+# Bring up with:  docker compose up --build -d
+#
+# Note on DATABASE_URL: asyncpg is used directly, not through SQLAlchemy, so
+# the DSN must not carry a `+asyncpg` dialect suffix. (config.py normalises it
+# either way, but the plain form is what the driver actually wants.)
+
+name: raahi
+
+services:
+  # ============================================================
+  # PostgreSQL + PostGIS
+  # ============================================================
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-raahi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raahi_secure_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-raahi_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Scripts here run once, in filename order, only on an empty data
+      # volume. Editing them later requires `docker compose down -v`.
+      - ./infrastructure/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raahi} -d ${POSTGRES_DB:-raahi_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # Redis — telemetry stream between gateway and watcher
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Streams must survive a restart: the watcher's consumer group offset
+    # lives in Redis, and losing it means re-processing or skipping fixes.
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ============================================================
+  # API Gateway
+  # ============================================================
+  backend:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-raahi}:${POSTGRES_PASSWORD:-raahi_secure_pass}@postgres:5432/${POSTGRES_DB:-raahi_db}
+      REDIS_URL: redis://redis:6379/0
+      AI_ENGINE_URL: http://ai_engine:8001
+      SERVICE_NAME: raahi-gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Bind mount + --reload for live editing. Remove both for production.
+      - ./services/backend/app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8000
+      --reload --reload-dir /app/app
+
+  # ============================================================
+  # AI Engine
+  # ============================================================
+  ai_engine:
+    build:
+      context: ./services/ai_engine
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BACKEND_URL: http://backend:8000
+      SERVICE_NAME: raahi-ai-engine
+    ports:
+      - "8001:8001"
+    depends_on:
+      backend:
+        condition: service_started
+    volumes:
+      - ./services/ai_engine/app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8001
+      --reload --reload-dir /app/app
+
+  # ============================================================
+  # Safety Watcher
+  # ============================================================
+  safety_watcher:
+    build:
+      context: ./services/safety_watcher
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-raahi}:${POSTGRES_PASSWORD:-raahi_secure_pass}@postgres:5432/${POSTGRES_DB:-raahi_db}
+      REDIS_URL: redis://redis:6379/0
+      BACKEND_URL: http://backend:8000
+      AI_ENGINE_URL: http://ai_engine:8001
+      SERVICE_NAME: raahi-safety-watcher
+      CONSUMER_NAME: watcher-1
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./services/safety_watcher/app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8002
+      --reload --reload-dir /app/app
+
+  # ============================================================
+  # Nginx reverse proxy (optional)
+  # Start with:  docker compose --profile proxy up -d
+  # ============================================================
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    profiles: ["proxy"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - ai_engine
+
+volumes:
+  pgdata:
+  redisdata:
