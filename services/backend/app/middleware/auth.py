@@ -1,7 +1,7 @@
 """Supabase JWT authentication.
 
-Supabase signs access tokens with a project-wide HS256 secret, so the gateway
-can verify them locally with no network call to Supabase on the request path.
+Supabase signs access tokens with RS256 (asymmetric). The gateway verifies
+them using Supabase's JWKS endpoint (public keys).
 
 The `users` table mirrors Supabase identities via `supabase_uid` (the `sub`
 claim). POST /auth/verify provisions that mirror row on first login; every
@@ -15,14 +15,20 @@ import secrets
 from typing import Any, Optional
 
 import asyncpg
+import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from jose.utils import base64url_decode
 
 from app.config import settings
 from app.services.db import get_db
 
 log = logging.getLogger(__name__)
+
+# Cache for JWKS keys
+_jwks_cache: Optional[dict] = None
+_jwks_fetched_at: float = 0
 
 # auto_error=False so optional-auth routes can fall through instead of 403ing
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -49,22 +55,75 @@ def _dev_auth_bypass_allowed() -> bool:
     return not settings.is_production and not settings.auth_configured
 
 
-def decode_token(token: str) -> dict[str, Any]:
-    """Verify a Supabase access token and return its claims."""
-    if not settings.SUPABASE_JWT_SECRET:
-        raise AuthError("Auth is not configured on this server")
+async def _fetch_jwks() -> dict:
+    """Fetch Supabase JWKS (public keys) for ES256/RS256 verification."""
+    global _jwks_cache, _jwks_fetched_at
+    import time
+
+    # Cache for 1 hour
+    if _jwks_cache and (time.time() - _jwks_fetched_at) < 3600:
+        return _jwks_cache
+
+    # Supabase serves JWKS at this path (not /auth/v1/jwks)
+    jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+    headers = {}
+    if settings.SUPABASE_ANON_KEY:
+        headers["apikey"] = settings.SUPABASE_ANON_KEY
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(jwks_url, headers=headers)
+        resp.raise_for_status()
+        _jwks_cache = resp.json()
+        _jwks_fetched_at = time.time()
+        log.info("Fetched Supabase JWKS: %d keys", len(_jwks_cache.get("keys", [])))
+        return _jwks_cache
+
+
+def _get_rsa_key(token: str, jwks: dict) -> Optional[dict]:
+    """Extract the RSA public key from JWKS matching the token's kid."""
+    from jose import jwt as jose_jwt
+
+    unverified_header = jose_jwt.get_unverified_header(token)
+    kid = unverified_header.get("kid")
+    if not kid:
+        return None
+
+    for key in jwks.get("keys", []):
+        if key.get("kid") == kid:
+            return key
+    return None
+
+
+async def decode_token(token: str) -> dict[str, Any]:
+    """Verify a Supabase access token (ES256/RS256) and return its claims."""
+    if _dev_auth_bypass_allowed():
+        raise AuthError("Dev auth bypass active; token verification skipped")
+
+    if not settings.SUPABASE_URL:
+        raise AuthError("SUPABASE_URL not configured")
 
     try:
+        jwks = await _fetch_jwks()
+        jwk = _get_rsa_key(token, jwks)
+        if not jwk:
+            raise AuthError("Unable to find matching key for token")
+
+        # Supabase uses ES256 (EC keys) - convert JWK for python-jose
+        from jose.backends import ECKey
+        key = ECKey(jwk, algorithm=jwk.get("alg", "ES256"))
+
         return jwt.decode(
             token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
+            key,
+            algorithms=[jwk.get("alg", "ES256")],
             audience=settings.SUPABASE_JWT_AUDIENCE,
             options={"verify_aud": bool(settings.SUPABASE_JWT_AUDIENCE)},
         )
     except JWTError as exc:
         log.info("JWT rejected: %s", exc)
         raise AuthError(f"Invalid or expired token: {exc}") from exc
+    except httpx.HTTPError as exc:
+        log.error("Failed to fetch JWKS: %s", exc)
+        raise AuthError("Unable to verify token: JWKS unavailable") from exc
 
 
 async def get_claims(

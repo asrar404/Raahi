@@ -35,6 +35,19 @@ export const GOOGLE_MAPS_KEY = (process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY ?? '').t
  *  local/dev mode against the gateway's demo-user fallback. */
 export const AUTH_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
+// Debug: log config state on load (only in development)
+if (__DEV__) {
+  console.log('[Config] Loaded values:', {
+    API_BASE_URL,
+    API_WS_URL,
+    AI_ENGINE_URL,
+    SUPABASE_URL: SUPABASE_URL ? 'SET' : 'NOT SET',
+    SUPABASE_ANON_KEY: SUPABASE_ANON_KEY ? 'SET' : 'NOT SET',
+    AUTH_ENABLED,
+    GOOGLE_MAPS_KEY: GOOGLE_MAPS_KEY ? 'SET' : 'NOT SET',
+  });
+}
+
 export const timeouts = {
   /** Standard REST calls. */
   api: 20_000,

@@ -18,6 +18,15 @@ import { type SupabaseClient, createClient } from '@supabase/supabase-js';
 import { AUTH_ENABLED, SUPABASE_ANON_KEY, SUPABASE_URL } from '../constants/config';
 import { useAuthStore } from '../store/authSlice';
 
+// Debug: log Supabase client init config (only in development)
+if (__DEV__) {
+  console.log('[Supabase Client] Initializing with:', {
+    url: SUPABASE_URL ? 'SET' : 'NOT SET',
+    anonKey: SUPABASE_ANON_KEY ? 'SET (starts with ' + SUPABASE_ANON_KEY.substring(0, 10) + '...)' : 'NOT SET',
+    authEnabled: AUTH_ENABLED,
+  });
+}
+
 export const supabase: SupabaseClient | null = AUTH_ENABLED
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
@@ -64,13 +73,19 @@ export function initAuthListener(): () => void {
 export async function sendOtp(phone: string): Promise<void> {
   if (!supabase) throw new Error('Supabase is not configured on this build');
   const { error } = await supabase.auth.signInWithOtp({ phone });
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('[Supabase] sendOtp error:', { message: error.message, code: error.status, details: error });
+    throw new Error(error.message);
+  }
 }
 
 export async function verifyOtp(phone: string, token: string): Promise<string> {
   if (!supabase) throw new Error('Supabase is not configured on this build');
   const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' });
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('[Supabase] verifyOtp error:', { message: error.message, code: error.status, details: error });
+    throw new Error(error.message);
+  }
   const accessToken = data.session?.access_token;
   if (!accessToken) throw new Error('Verification succeeded but no session was returned');
   useAuthStore.getState().setToken(accessToken);
@@ -81,7 +96,16 @@ export async function verifyOtp(phone: string, token: string): Promise<string> {
 export async function signInWithEmail(email: string, password: string): Promise<string> {
   if (!supabase) throw new Error('Supabase is not configured on this build');
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('[Supabase] signInWithEmail error:', {
+      message: error.message,
+      code: error.status,
+      details: error,
+      name: error.name,
+      cause: error.cause,
+    });
+    throw new Error(error.message);
+  }
   const accessToken = data.session?.access_token;
   if (!accessToken) throw new Error('Sign-in succeeded but no session was returned');
   useAuthStore.getState().setToken(accessToken);
@@ -94,7 +118,16 @@ export async function signUpWithEmail(
 ): Promise<string | null> {
   if (!supabase) throw new Error('Supabase is not configured on this build');
   const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('[Supabase] signUpWithEmail error:', {
+      message: error.message,
+      code: error.status,
+      details: error,
+      name: error.name,
+      cause: error.cause,
+    });
+    throw new Error(error.message);
+  }
   const accessToken = data.session?.access_token ?? null;
   if (accessToken) useAuthStore.getState().setToken(accessToken);
   return accessToken;

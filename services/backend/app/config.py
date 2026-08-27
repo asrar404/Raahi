@@ -42,9 +42,9 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
+    # JWT secret no longer used (Supabase uses RS256 via JWKS)
     SUPABASE_JWT_SECRET: str = ""
     SUPABASE_JWT_AUDIENCE: str = "authenticated"
-    JWT_ALGORITHM: str = "HS256"
 
     # ── Twilio ──────────────────────────────────────────────
     TWILIO_ACCOUNT_SID: str = ""

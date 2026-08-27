@@ -71,7 +71,7 @@ services:
       AI_ENGINE_URL: http://ai_engine:8001
       SERVICE_NAME: raahi-gateway
     ports:
-      - "8000:8000"
+      - "18000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,7 +98,7 @@ services:
       BACKEND_URL: http://backend:8000
       SERVICE_NAME: raahi-ai-engine
     ports:
-      - "8001:8001"
+      - "18001:8001"
     depends_on:
       backend:
         condition: service_started
@@ -126,7 +126,7 @@ services:
       SERVICE_NAME: raahi-safety-watcher
       CONSUMER_NAME: watcher-1
     ports:
-      - "8002:8002"
+      - "18002:8002"
     depends_on:
       postgres:
         condition: service_healthy

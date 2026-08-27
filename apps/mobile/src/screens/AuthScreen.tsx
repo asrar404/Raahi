@@ -72,7 +72,14 @@ export default function AuthScreen() {
     try {
       await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong');
+      const message = err instanceof Error ? err.message : 'Something went wrong';
+      // Log full error details to Metro console for debugging
+      console.error('[AuthScreen] Auth action failed:', {
+        message,
+        stack: err instanceof Error ? err.stack : undefined,
+        error: err,
+      });
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -106,7 +113,18 @@ export default function AuthScreen() {
           throw new Error('Check your email to confirm your account, then sign in.');
         }
       } else {
-        await signInWithEmail(email.trim(), password);
+        try {
+          await signInWithEmail(email.trim(), password);
+        } catch (err) {
+          // Detailed logging for Supabase auth errors
+          console.error('[AuthScreen] signInWithEmail failed:', {
+            message: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+            error: err,
+            email: email.trim(),
+          });
+          throw err;
+        }
       }
       await provision();
     });
